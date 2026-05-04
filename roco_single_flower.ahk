@@ -93,7 +93,7 @@ BuildGui() {
     guiObj.SetFont("s10", "Microsoft YaHei UI")
 
     controls := {}
-    controls.statusText := guiObj.Add("Text", "xm w470", "状态：空闲")
+    controls.statusText := guiObj.Add("Text", "xm w540", "状态：空闲")
 
     guiObj.Add("Text", "xm y+10 w70", "目标窗口：")
     controls.windowSelect := guiObj.Add("DropDownList", "x+10 yp-3 w310", ["请先刷新窗口列表"])
@@ -124,13 +124,14 @@ BuildGui() {
     guiObj.Add("Text", "xm y+14 w90", "发送模式：")
     controls.sendModeSelect := guiObj.Add("DropDownList", "x+8 yp-3 w260 Choose" app.settings.sendMode, SEND_MODES)
 
-    guiObj.Add("Button", "xm y+16 w140 h30", "开始/停止 (Ctrl+=)").OnEvent("Click", ToggleLoop)
-    guiObj.Add("Button", "x+10 w120 h30", "发送按键测试").OnEvent("Click", ManualSend)
-    guiObj.Add("Button", "x+10 w100 h30", "退出").OnEvent("Click", HandleExitClick)
+    guiObj.Add("Button", "xm y+16 w130 h30", "开始/停止 (Ctrl+=)").OnEvent("Click", ToggleLoop)
+    guiObj.Add("Button", "x+10 w110 h30", "发送按键测试").OnEvent("Click", ManualSend)
+    guiObj.Add("Button", "x+10 w110 h30", "初始化(↓×10)").OnEvent("Click", RunInitialization)
+    guiObj.Add("Button", "x+10 w80 h30", "退出").OnEvent("Click", HandleExitClick)
     controls.alwaysOnTopCheck := guiObj.Add("Checkbox", "x+15 yp+8 Checked" app.settings.alwaysOnTop, "窗口置顶")
     controls.alwaysOnTopCheck.OnEvent("Click", OnAlwaysOnTopToggle)
 
-    controls.logEdit := guiObj.Add("Edit", "xm y+10 w470 r12 ReadOnly -Wrap", "")
+    controls.logEdit := guiObj.Add("Edit", "xm y+10 w540 r12 ReadOnly -Wrap", "")
 
     app.mainGui := guiObj
     app.controls := controls
@@ -231,7 +232,7 @@ IsInfiniteLoop(settings) {
 
 RunPrefixSequence(hwnd) {
     keys := app.settings.prefixKeys
-    AddLog("前置序列开始：" keys)
+    AddLog("前置序列开始：" keys "（每个数字后跟一次左键点击）")
     Loop Parse, keys {
         if !app.isRunning
             return false
@@ -239,7 +240,15 @@ RunPrefixSequence(hwnd) {
         SetStatus("状态：前置按键 " ch)
         if !SendKeyByName(hwnd, ch, 80, 120)
             return false
-        if !SafeSleep(1000, 1200)
+        if !SafeSleep(450, 550)
+            return false
+
+        if !app.isRunning
+            return false
+        SetStatus("状态：前置左键 " ch)
+        if !SendClickAtCenter(hwnd, 80, 120)
+            return false
+        if !SafeSleep(450, 550)
             return false
     }
     AddLog("前置序列完成，准备发送主键 2")
@@ -358,23 +367,39 @@ ManualSend(*) {
         if keyName = ""
             continue
         holdRange := GetKeyHoldRange(keyName)
-        try {
-            vk := GetKeyVK(keyName)
-            sc := GetKeySC(keyName)
-            if !vk || !sc {
-                AddLog("无法识别按键：" keyName)
-                continue
-            }
-            SendKeyEvent(hwnd, vk, sc, true)
-            Sleep Random(holdRange.min, holdRange.max)
-            SendKeyEvent(hwnd, vk, sc, false)
-            Sleep settings.keyDelayMs
-        } catch as err {
-            AddLog("测试发送报错：" err.Message)
-        }
+        SendKeyByName(hwnd, keyName, holdRange.min, holdRange.max)
     }
     SetStatus("状态：测试发送完成")
     AddLog("测试发送完成")
+}
+
+RunInitialization(*) {
+    if app.isRunning {
+        SetStatus("状态：循环中，请先停止后再初始化")
+        AddLog("初始化失败：当前正在循环")
+        return
+    }
+
+    settings := ApplySettingsFromUi()
+    if !settings
+        return
+
+    hwnd := FindSelectedGameWindow()
+    if !hwnd
+        return
+
+    AddLog("初始化：连续按 10 次下箭头（发送=" SEND_MODES[settings.sendMode] "）")
+    Loop 10 {
+        SetStatus("状态：初始化中 " A_Index "/10")
+        if !SendKeyByName(hwnd, "Down", 80, 120) {
+            SetStatus("状态：初始化中断")
+            AddLog("初始化中断")
+            return
+        }
+        Sleep 200
+    }
+    SetStatus("状态：初始化完成，可按 Ctrl+= 启动")
+    AddLog("初始化完成，可按 Ctrl+= 启动循环")
 }
 
 ApplySettingsFromUi() {
@@ -626,8 +651,7 @@ SendKeyBackground(hwnd, keyName, holdMin, holdMax) {
         }
 
         SendKeyEvent(hwnd, vk, sc, true)
-        if !SafeSleep(holdMin, holdMax)
-            return false
+        Sleep Random(holdMin, holdMax)
         SendKeyEvent(hwnd, vk, sc, false)
         Sleep app.settings.keyDelayMs
         return true
@@ -649,13 +673,56 @@ SendKeyForeground(hwnd, keyName, holdMin, holdMax) {
         }
 
         Send "{" keyName " down}"
-        if !SafeSleep(holdMin, holdMax)
-            return false
+        Sleep Random(holdMin, holdMax)
         Send "{" keyName " up}"
         Sleep app.settings.keyDelayMs
         return true
     } catch as err {
         AddLog("前台按键报错：" err.Message)
+        return false
+    }
+}
+
+SendClickAtCenter(hwnd, holdMin, holdMax) {
+    if app.settings.sendMode = 2
+        return SendClickForeground(hwnd, holdMin, holdMax)
+    return SendClickBackground(hwnd, holdMin, holdMax)
+}
+
+SendClickBackground(hwnd, holdMin, holdMax) {
+    try {
+        WinGetClientPos &cx, &cy, &cw, &ch, "ahk_id " hwnd
+        targetX := Round(cw / 2)
+        targetY := Round(ch / 2)
+        ControlClick("X" targetX " Y" targetY, "ahk_id " hwnd, , "Left", 1, "NA D")
+        Sleep Random(holdMin, holdMax)
+        ControlClick("X" targetX " Y" targetY, "ahk_id " hwnd, , "Left", 1, "NA U")
+        return true
+    } catch as err {
+        AddLog("后台点击报错：" err.Message)
+        return false
+    }
+}
+
+SendClickForeground(hwnd, holdMin, holdMax) {
+    try {
+        if !WinActive("ahk_id " hwnd) {
+            WinActivate "ahk_id " hwnd
+            if !WinWaitActive("ahk_id " hwnd, , 1) {
+                AddLog("前台点击失败：窗口激活超时")
+                return false
+            }
+            Sleep 30
+        }
+        WinGetClientPos &cx, &cy, &cw, &ch, "ahk_id " hwnd
+        screenX := cx + Round(cw / 2)
+        screenY := cy + Round(ch / 2)
+        MouseClick "Left", screenX, screenY, 1, 0, "D"
+        Sleep Random(holdMin, holdMax)
+        MouseClick "Left", screenX, screenY, 1, 0, "U"
+        return true
+    } catch as err {
+        AddLog("前台点击报错：" err.Message)
         return false
     }
 }
