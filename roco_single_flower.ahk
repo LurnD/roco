@@ -8,6 +8,7 @@ if !A_IsAdmin {
 
 global CONFIG_FILE := A_ScriptDir "\roco_single_flower.ini"
 global MAX_LOG_LINES := 30
+global SEND_MODES := ["后台 (PostMessage)", "前台 (激活窗口+真实按键)"]
 global app := CreateAppState()
 
 DetectHiddenWindows true
@@ -46,7 +47,8 @@ GetDefaultSettings() {
         keyDelayMs: 350,
         afkChance: 3,
         restChance: 5,
-        alwaysOnTop: 0
+        alwaysOnTop: 0,
+        sendMode: 1
     }
 }
 
@@ -61,7 +63,8 @@ LoadSettings() {
         keyDelayMs: IniRead(CONFIG_FILE, "Settings", "KeyDelayMs", defaults.keyDelayMs),
         afkChance: IniRead(CONFIG_FILE, "Settings", "AfkChance", defaults.afkChance),
         restChance: IniRead(CONFIG_FILE, "Settings", "RestChance", defaults.restChance),
-        alwaysOnTop: IniRead(CONFIG_FILE, "Settings", "AlwaysOnTop", defaults.alwaysOnTop)
+        alwaysOnTop: IniRead(CONFIG_FILE, "Settings", "AlwaysOnTop", defaults.alwaysOnTop),
+        sendMode: IniRead(CONFIG_FILE, "Settings", "SendMode", defaults.sendMode)
     }
 
     try {
@@ -80,6 +83,7 @@ SaveSettings(settings) {
     IniWrite(settings.afkChance, CONFIG_FILE, "Settings", "AfkChance")
     IniWrite(settings.restChance, CONFIG_FILE, "Settings", "RestChance")
     IniWrite(settings.alwaysOnTop, CONFIG_FILE, "Settings", "AlwaysOnTop")
+    IniWrite(settings.sendMode, CONFIG_FILE, "Settings", "SendMode")
 }
 
 BuildGui() {
@@ -116,6 +120,9 @@ BuildGui() {
 
     guiObj.Add("Text", "x+10 yp+3 w90", "喘息概率%：")
     controls.restChanceEdit := guiObj.Add("Edit", "x+8 yp-3 w50 Number", app.settings.restChance)
+
+    guiObj.Add("Text", "xm y+14 w90", "发送模式：")
+    controls.sendModeSelect := guiObj.Add("DropDownList", "x+8 yp-3 w260 Choose" app.settings.sendMode, SEND_MODES)
 
     guiObj.Add("Button", "xm y+16 w140 h30", "开始/停止 (Ctrl+=)").OnEvent("Click", ToggleLoop)
     guiObj.Add("Button", "x+10 w120 h30", "发送按键测试").OnEvent("Click", ManualSend)
@@ -164,7 +171,7 @@ StartLoop() {
     app.isRunning := true
     app.currentHwnd := hwnd
     SetStatus("状态：循环已启动")
-    AddLog("开始循环，窗口 hwnd=" hwnd)
+    AddLog("开始循环，窗口 hwnd=" hwnd "，发送=" SEND_MODES[settings.sendMode])
     SetTimer RunMainLoop, -1
 }
 
@@ -190,6 +197,7 @@ RunMainLoop() {
             return
         if !SafeSleep(3800, 4200)
             return
+        AddLog("主键 2 完成，进入内循环")
 
         if IsInfiniteLoop(app.settings) {
             SetStatus("状态：执行内循环（无限）")
@@ -223,6 +231,7 @@ IsInfiniteLoop(settings) {
 
 RunPrefixSequence(hwnd) {
     keys := app.settings.prefixKeys
+    AddLog("前置序列开始：" keys)
     Loop Parse, keys {
         if !app.isRunning
             return false
@@ -233,6 +242,7 @@ RunPrefixSequence(hwnd) {
         if !SafeSleep(1000, 1200)
             return false
     }
+    AddLog("前置序列完成，准备发送主键 2")
     return true
 }
 
@@ -406,7 +416,8 @@ ReadSettingsFromUi() {
         keyDelayMs: app.controls.keyDelayEdit.Value,
         afkChance: app.controls.afkChanceEdit.Value,
         restChance: app.controls.restChanceEdit.Value,
-        alwaysOnTop: HasUiControls() && app.controls.HasOwnProp("alwaysOnTopCheck") ? app.controls.alwaysOnTopCheck.Value : app.settings.alwaysOnTop
+        alwaysOnTop: HasUiControls() && app.controls.HasOwnProp("alwaysOnTopCheck") ? app.controls.alwaysOnTopCheck.Value : app.settings.alwaysOnTop,
+        sendMode: app.controls.HasOwnProp("sendModeSelect") ? app.controls.sendModeSelect.Value : app.settings.sendMode
     }
 }
 
@@ -429,6 +440,10 @@ ValidateSettings(settings) {
     restChance := ParseChance(settings.restChance, "喘息概率")
     alwaysOnTop := (settings.alwaysOnTop + 0) ? 1 : 0
 
+    sendMode := ParsePositiveInteger(settings.sendMode, "发送模式")
+    if sendMode < 1 || sendMode > 2
+        throw Error("发送模式无效")
+
     return {
         targetExe: settings.targetExe,
         prefixKeys: prefixKeys,
@@ -438,7 +453,8 @@ ValidateSettings(settings) {
         keyDelayMs: keyDelayMs,
         afkChance: afkChance,
         restChance: restChance,
-        alwaysOnTop: alwaysOnTop
+        alwaysOnTop: alwaysOnTop,
+        sendMode: sendMode
     }
 }
 
@@ -489,6 +505,8 @@ UpdateSettingsUi(settings) {
     app.controls.restChanceEdit.Value := settings.restChance
     if app.controls.HasOwnProp("alwaysOnTopCheck")
         app.controls.alwaysOnTopCheck.Value := settings.alwaysOnTop
+    if app.controls.HasOwnProp("sendModeSelect")
+        app.controls.sendModeSelect.Value := settings.sendMode
 }
 
 HasUiControls() {
@@ -593,6 +611,12 @@ OnAlwaysOnTopToggle(*) {
 }
 
 SendKeyByName(hwnd, keyName, holdMin, holdMax) {
+    if app.settings.sendMode = 2
+        return SendKeyForeground(hwnd, keyName, holdMin, holdMax)
+    return SendKeyBackground(hwnd, keyName, holdMin, holdMax)
+}
+
+SendKeyBackground(hwnd, keyName, holdMin, holdMax) {
     try {
         vk := GetKeyVK(keyName)
         sc := GetKeySC(keyName)
@@ -608,7 +632,30 @@ SendKeyByName(hwnd, keyName, holdMin, holdMax) {
         Sleep app.settings.keyDelayMs
         return true
     } catch as err {
-        AddLog("按键发送报错：" err.Message)
+        AddLog("后台按键报错：" err.Message)
+        return false
+    }
+}
+
+SendKeyForeground(hwnd, keyName, holdMin, holdMax) {
+    try {
+        if !WinActive("ahk_id " hwnd) {
+            WinActivate "ahk_id " hwnd
+            if !WinWaitActive("ahk_id " hwnd, , 1) {
+                AddLog("前台按键失败：窗口激活超时")
+                return false
+            }
+            Sleep 30
+        }
+
+        Send "{" keyName " down}"
+        if !SafeSleep(holdMin, holdMax)
+            return false
+        Send "{" keyName " up}"
+        Sleep app.settings.keyDelayMs
+        return true
+    } catch as err {
+        AddLog("前台按键报错：" err.Message)
         return false
     }
 }
